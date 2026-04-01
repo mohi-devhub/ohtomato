@@ -40,7 +40,8 @@ type Phase =
   | { kind: 'waiting' }
   | { kind: 'streaming' }
   | { kind: 'tool_call';   name: string; args: Record<string, unknown> }
-  | { kind: 'tool_result'; tool: string; result: unknown };
+  | { kind: 'tool_result'; tool: string; result: unknown }
+  | { kind: 'confirming';  confirmation_id: string; name: string; args: Record<string, unknown> };
 
 
 type ModelSection = 'llm' | 'asr';
@@ -92,6 +93,7 @@ export default function ChatTab(): React.ReactElement {
   const [pluginsStatus, setPluginsStatus]   = useState('');
 
   const abortControllerRef  = useRef<AbortController | null>(null);
+  const confirmingRef       = useRef<string | null>(null);
   const escPressedOnceRef   = useRef(false);
   const escTimerRef         = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [interrupted, setInterrupted] = useState(false);
@@ -209,6 +211,18 @@ export default function ChatTab(): React.ReactElement {
           case 'tool_result':
             setPhase({ kind: 'tool_result', tool: event.tool, result: event.result });
             break;
+          case 'confirmation_required':
+            confirmingRef.current = event.confirmation_id;
+            setPhase({ kind: 'confirming', confirmation_id: event.confirmation_id,
+                       name: event.name, args: event.arguments });
+            break;
+          case 'tool_denied':
+            confirmingRef.current = null;
+            setPhase({ kind: 'idle' });
+            setSysMsg(event.reason === 'timeout'
+              ? `Tool "${event.name}" cancelled — confirmation timed out`
+              : `Tool "${event.name}" denied`);
+            break;
           case 'done':
             setMessages(prev => [...prev, { role: 'assistant', content: reply }]);
             setCurrent('');
@@ -304,6 +318,18 @@ export default function ChatTab(): React.ReactElement {
               break;
             case 'tool_result':
               setPhase({ kind: 'tool_result', tool: event.tool, result: event.result });
+              break;
+            case 'confirmation_required':
+              confirmingRef.current = event.confirmation_id;
+              setPhase({ kind: 'confirming', confirmation_id: event.confirmation_id,
+                         name: event.name, args: event.arguments });
+              break;
+            case 'tool_denied':
+              confirmingRef.current = null;
+              setPhase({ kind: 'idle' });
+              setSysMsg(event.reason === 'timeout'
+                ? `Tool "${event.name}" cancelled — confirmation timed out`
+                : `Tool "${event.name}" denied`);
               break;
             case 'done':
               currentMessages = [...currentMessages, { role: 'assistant', content: reply }];
@@ -546,6 +572,24 @@ export default function ChatTab(): React.ReactElement {
       }
     }
 
+    // Confirmation dialog: y = approve, n/Esc = deny
+    if (phase.kind === 'confirming' && confirmingRef.current) {
+      const cid = confirmingRef.current;
+      if (_inp === 'y' || _inp === 'Y') {
+        confirmingRef.current = null;
+        setPhase({ kind: 'waiting' });
+        api.confirmTool(cid, true).catch(e => setSysMsg(`Confirm error: ${(e as Error).message}`));
+        return;
+      }
+      if (_inp === 'n' || _inp === 'N' || key.escape) {
+        confirmingRef.current = null;
+        setPhase({ kind: 'waiting' });
+        api.confirmTool(cid, false).catch(e => setSysMsg(`Confirm error: ${(e as Error).message}`));
+        return;
+      }
+      return; // swallow all other keys while dialog is open
+    }
+
     // Double-ESC interrupt
     if (streaming && key.escape) {
       if (escPressedOnceRef.current) {
@@ -658,6 +702,23 @@ export default function ChatTab(): React.ReactElement {
           <Text color="gray" dimColor>
             Result [{phase.tool}]: {JSON.stringify(phase.result).slice(0, 120)}
           </Text>
+        );
+      case 'confirming':
+        return (
+          <Box flexDirection="column" borderStyle="round" borderColor="yellow" paddingX={1}>
+            <Box marginBottom={1}>
+              <Text color="yellow" bold>Confirm dangerous tool</Text>
+            </Box>
+            <Box>
+              <Text color="white" bold>{phase.name}  </Text>
+              <Text color="gray">{JSON.stringify(phase.args)}</Text>
+            </Box>
+            <Box marginTop={1}>
+              <Text color="green" bold>[y] Approve  </Text>
+              <Text color="red" bold>[n] Deny  </Text>
+              <Text color="gray" dimColor>[Esc] Deny</Text>
+            </Box>
+          </Box>
         );
       default:
         return null;
