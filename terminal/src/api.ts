@@ -144,6 +144,15 @@ export const executeTool = (
     body: JSON.stringify({ tool_name, arguments: arguments_ }),
   });
 
+export const confirmTool = (
+  confirmation_id: string,
+  approved: boolean,
+): Promise<{ confirmation_id: string; approved: boolean }> =>
+  request('/chat/confirm', {
+    method: 'POST',
+    body: JSON.stringify({ confirmation_id, approved }),
+  });
+
 export const startRecording = (): Promise<{ status: string; sample_rate?: number }> =>
   request('/asr/record/start', { method: 'POST' });
 

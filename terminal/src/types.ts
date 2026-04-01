@@ -122,8 +122,10 @@ export interface AppState {
 }
 
 export type AgenticEvent =
-  | { type: 'token';       token: string }
-  | { type: 'tool_call';   name: string; arguments: Record<string, unknown> }
-  | { type: 'tool_result'; tool: string; result: unknown }
+  | { type: 'token';                token: string }
+  | { type: 'tool_call';            name: string; arguments: Record<string, unknown> }
+  | { type: 'tool_result';          tool: string; result: unknown }
+  | { type: 'confirmation_required'; confirmation_id: string; name: string; arguments: Record<string, unknown> }
+  | { type: 'tool_denied';          confirmation_id: string; name: string; reason: 'denied' | 'timeout' }
   | { type: 'done' }
-  | { type: 'error';       message: string };
+  | { type: 'error';                message: string };
