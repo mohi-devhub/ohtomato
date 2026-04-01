@@ -30,6 +30,7 @@ from ToolCalling import (
     execute_tool,
     run_agentic_loop,
     get_tools_list,
+    resolve_confirmation,
 )
 from PluginLoader import list_plugins, reload_plugins
 
@@ -81,6 +82,11 @@ class GenerateRequest(BaseModel):
 class ExecuteToolRequest(BaseModel):
     tool_name: str
     arguments: dict
+
+
+class ConfirmRequest(BaseModel):
+    confirmation_id: str
+    approved: bool
 
 
 class LoadModelRequest(BaseModel):
@@ -230,6 +236,18 @@ async def chat_agentic(req: AgenticChatRequest):
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+@app.post("/chat/confirm", tags=["inference"])
+async def confirm_tool(req: ConfirmRequest):
+    """Signal approval or denial for a pending dangerous-tool confirmation."""
+    found = resolve_confirmation(req.confirmation_id, req.approved)
+    if not found:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Confirmation '{req.confirmation_id}' not found or already resolved.",
+        )
+    return {"confirmation_id": req.confirmation_id, "approved": req.approved}
 
 
 @app.post("/generate", tags=["inference"])

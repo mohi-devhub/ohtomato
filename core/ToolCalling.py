@@ -1,3 +1,4 @@
+import asyncio
 import fnmatch
 import json
 import os
@@ -7,6 +8,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import uuid
 import zipfile
 from typing import Any, AsyncGenerator, Optional
 
@@ -17,6 +19,43 @@ import PluginLoader
 
 OLLAMA_HOST = "http://localhost:11434"
 _client = AsyncClient(host=OLLAMA_HOST)
+
+# ── Tool confirmation ──────────────────────────────────────────────────────────
+
+DANGEROUS_TOOLS: frozenset[str] = frozenset({
+    "delete_file",
+    "delete_directory",
+    "run_command",
+    "run_python",
+    "write_file",
+    "patch_file",
+    "move_file",
+})
+
+# Maps confirmation_id -> {"event": asyncio.Event, "approved": bool | None}
+# Safe as a plain dict: uvicorn runs a single asyncio event loop.
+_pending_confirmations: dict[str, dict] = {}
+
+
+def create_confirmation(cid: str) -> asyncio.Event:
+    event = asyncio.Event()
+    _pending_confirmations[cid] = {"event": event, "approved": None}
+    return event
+
+
+def resolve_confirmation(cid: str, approved: bool) -> bool:
+    """Called by POST /chat/confirm. Returns False if the id was not found."""
+    entry = _pending_confirmations.get(cid)
+    if entry is None:
+        return False
+    entry["approved"] = approved
+    entry["event"].set()
+    return True
+
+
+def _pop_confirmation_result(cid: str) -> bool | None:
+    entry = _pending_confirmations.pop(cid, None)
+    return entry["approved"] if entry else None
 
 
 def _resolve(path: str) -> str:
@@ -603,6 +642,30 @@ async def run_agentic_loop(
             # Guard: replace placeholder write content with real gathered data
             if tool_name in ("write_file", "append_file") and "content" in tool_args:
                 tool_args["content"] = _real_content_from_steps(tool_args["content"])
+
+            # ── Confirmation gate for dangerous tools ──────────────────────
+            if tool_name in DANGEROUS_TOOLS:
+                cid = str(uuid.uuid4())
+                event = create_confirmation(cid)
+                yield {
+                    "type": "confirmation_required",
+                    "confirmation_id": cid,
+                    "name": tool_name,
+                    "arguments": tool_args,
+                }
+                try:
+                    await asyncio.wait_for(event.wait(), timeout=120.0)
+                except asyncio.TimeoutError:
+                    _pending_confirmations.pop(cid, None)
+                    yield {"type": "tool_denied", "confirmation_id": cid,
+                           "name": tool_name, "reason": "timeout"}
+                    return
+                approved = _pop_confirmation_result(cid)
+                if not approved:
+                    yield {"type": "tool_denied", "confirmation_id": cid,
+                           "name": tool_name, "reason": "denied"}
+                    return
+            # ── End confirmation gate ──────────────────────────────────────
 
             yield {"type": "tool_call", "name": tool_name, "arguments": tool_args}
 
